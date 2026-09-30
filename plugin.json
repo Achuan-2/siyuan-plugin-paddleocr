@@ -2,7 +2,7 @@
   "name": "siyuan-plugin-paddleocr",
   "author": "Achuan-2",
   "url": "https://github.com/Achuan-2/siyuan-plugin-paddleocr",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "3.0.0",
   "backends": [
     "all"
