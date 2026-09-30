@@ -168,7 +168,7 @@
     display: grid;
     flex: 1;
     gap: 12px;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
     min-height: 0;
 }
 
@@ -277,7 +277,7 @@
 
     .paddleocr-panel__workspace {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: minmax(160px, 1fr) minmax(180px, 1fr);
+        grid-template-rows: minmax(180px, 1fr) minmax(160px, 1fr);
         min-height: 360px;
     }
 }

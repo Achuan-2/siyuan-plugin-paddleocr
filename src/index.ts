@@ -512,8 +512,8 @@ export default class PaddleOCRPlugin extends Plugin {
                     <div class="paddleocr-panel__actions"><button class="b3-button b3-button--outline" data-action="retry" disabled>重新识别</button><button class="b3-button b3-button--outline" data-action="copy" disabled>复制文字</button>${assetPath ? '<button class="b3-button" data-action="save" disabled>保存到思源 OCR</button>' : ""}</div>
                 </div>
                 <div class="paddleocr-panel__workspace">
-                    <div class="paddleocr-panel__text"><textarea class="paddleocr-panel__result" data-role="result" spellcheck="false" aria-label="识别文字，可编辑" placeholder="识别结果可在这里修改后保存"></textarea></div>
                     <div class="paddleocr-panel__preview"><span data-role="preview-empty">选择图片后在这里预览</span><div class="paddleocr-panel__image" data-role="preview-image" hidden><img alt="待识别图片" draggable="false"><div class="paddleocr-panel__ocr-layer" data-role="ocr-layer" tabindex="-1"></div></div></div>
+                    <div class="paddleocr-panel__text"><textarea class="paddleocr-panel__result" data-role="result" spellcheck="false" aria-label="识别文字，可编辑" placeholder="识别结果可在这里修改后保存"></textarea></div>
                 </div>
                 <div class="paddleocr-panel__footer"><span data-role="image-status"></span><span data-role="status" aria-live="polite"></span></div>
             </div>`,

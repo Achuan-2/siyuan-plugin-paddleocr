@@ -7,8 +7,11 @@ const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const buildDir = join(projectDir, "dist");
 const manifest = JSON.parse(await readFile(join(buildDir, "plugin.json"), "utf8"));
 const packageInfo = JSON.parse(await readFile(join(projectDir, "package.json"), "utf8"));
-if (manifest.name !== packageInfo.name || manifest.version !== packageInfo.version) {
-    throw new Error("plugin.json 与 package.json 的插件名称或版本不一致，已停止打包");
+if (manifest.name !== packageInfo.name) {
+    throw new Error(`插件名称不一致：dist/plugin.json 为 ${manifest.name}，package.json 为 ${packageInfo.name}，已停止打包`);
+}
+if (manifest.version !== packageInfo.version) {
+    throw new Error(`插件版本不一致：dist/plugin.json 为 ${manifest.version}，package.json 为 ${packageInfo.version}。请同步修改根目录的 plugin.json 和 package.json 后重新构建`);
 }
 
 // ZIP 根目录直接放置插件文件，不能包含外层 dist 目录。
