@@ -24,7 +24,8 @@ for command in git node pnpm; do
     command -v "$command" >/dev/null || { echo "缺少命令：$command" >&2; exit 1; }
 done
 
-version=$(node --input-type=module -e 'import fs from "node:fs"; const plugin = JSON.parse(fs.readFileSync("plugin.json", "utf8")); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (plugin.name !== pkg.name || plugin.version !== pkg.version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(plugin.version)) throw new Error("插件名称或版本不一致，或版本格式无效"); console.log(plugin.version);')
+node scripts/sync-version.mjs
+version=$(node --input-type=module -e 'import fs from "node:fs"; console.log(JSON.parse(fs.readFileSync("plugin.json", "utf8")).version);')
 repository=$(node --input-type=module -e 'import fs from "node:fs"; const url = new URL(JSON.parse(fs.readFileSync("plugin.json", "utf8")).url); if (url.protocol !== "https:" || url.hostname !== "github.com" || !/^\/[\w.-]+\/[\w.-]+\/?$/.test(url.pathname)) throw new Error("plugin.json.url 必须为 GitHub 仓库地址"); console.log(url.pathname.replace(/^\//, "").replace(/\/$/, "").replace(/\.git$/, ""));')
 tag="v$version"
 
@@ -32,7 +33,7 @@ if ! "$dry_run"; then
     command -v gh >/dev/null || { echo "缺少 GitHub CLI：gh" >&2; exit 1; }
     gh auth status
     if [[ -n "$(git status --porcelain)" ]]; then
-        echo "请先提交待发布的改动，再运行发布脚本；可用 --dry-run 检查未提交的代码。" >&2
+        echo "请先提交待发布的改动（包括同步后的 package.json），再运行发布脚本；可用 --dry-run 检查未提交的代码。" >&2
         exit 1
     fi
     current_branch=$(git symbolic-ref --quiet --short HEAD) || { echo "请切换到待发布分支。" >&2; exit 1; }
