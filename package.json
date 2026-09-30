@@ -4,18 +4,22 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm run build:release && pnpm run make_dev_copy",
-    "build:release": "pnpm run sync-version && vite build && node scripts/package-plugin.mjs",
-    "sync-version": "node scripts/sync-version.mjs",
-    "make_dev_copy": "node scripts/copy-to-siyuan.mjs",
-    "test": "node --test tests/*.test.mjs",
-    "typecheck": "tsc --noEmit"
+    "dev": "cross-env NODE_ENV=development VITE_SOURCEMAP=inline vite build --watch",
+    "build": "cross-env NODE_ENV=production vite build",
+    "make-link": "node --no-warnings ./scripts/make_dev_link.js",
+    "make_dev_copy": "node --no-warnings ./scripts/make_dev_copy.js",
+    "update-version": "node --no-warnings ./scripts/update_version.js",
+    "make-install": "vite build && node --no-warnings ./scripts/make_install.js"
   },
   "dependencies": {
     "@paddleocr/paddleocr-js": "0.4.2",
     "onnxruntime-web": "1.30.0"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^3.1.0",
+    "@tsconfig/svelte": "^4.0.1",
+    "@types/node": "^20.3.0",
+    "cross-env": "^7.0.3",
     "fflate": "^0.8.3",
     "siyuan": "1.2.7",
     "typescript": "^5.9.0",
