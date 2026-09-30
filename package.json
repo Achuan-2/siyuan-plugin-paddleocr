@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "vite build && node scripts/copy-to-siyuan.mjs",
+    "test": "node --test tests/textLayout.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

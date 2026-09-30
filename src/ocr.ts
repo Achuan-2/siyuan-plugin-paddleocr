@@ -1,10 +1,18 @@
-import {PaddleOCR, type OcrResult} from "@paddleocr/paddleocr-js";
+import {PaddleOCR, type OcrResult, type OcrResultItem} from "@paddleocr/paddleocr-js";
 import {getModel} from "./modelStore";
+
+// 截图中的图标和箭头容易被检测为单字；默认阈值分别为 0.6 和 0。
+const TEXT_BOX_SCORE_THRESHOLD = 0.7;
+const TEXT_RECOGNITION_SCORE_THRESHOLD = 0.6;
 
 export interface Recognition {
     text: string;
     lines: number;
     elapsedMs: number;
+    detectionMs: number;
+    recognitionMs: number;
+    image: OcrResult["image"];
+    items: Pick<OcrResultItem, "text" | "poly">[];
 }
 
 export class LocalOCR {
@@ -20,15 +28,22 @@ export class LocalOCR {
 
     async recognize(image: Blob): Promise<Recognition> {
         await this.ensureLoaded();
-        const [result] = await this.engine!.predict(image) as OcrResult[];
+        const [result] = await this.engine!.predict(image, {
+            textDetBoxThresh: TEXT_BOX_SCORE_THRESHOLD,
+            textRecScoreThresh: TEXT_RECOGNITION_SCORE_THRESHOLD,
+        }) as OcrResult[];
         if (!result) {
             throw new Error("识别引擎没有返回结果");
         }
-        const lines = result.items.map(item => item.text.trim()).filter(Boolean);
+        const items = result.items.map(item => ({text: item.text.trim(), poly: item.poly})).filter(item => item.text);
         return {
-            text: lines.join("\n"),
-            lines: lines.length,
+            text: items.map(item => item.text).join("\n"),
+            lines: items.length,
             elapsedMs: result.metrics.totalMs,
+            detectionMs: result.metrics.detMs,
+            recognitionMs: result.metrics.recMs,
+            image: result.image,
+            items,
         };
     }
 
@@ -75,10 +90,12 @@ export class LocalOCR {
                 textRecognitionModelName: "PP-OCRv6_small_rec",
                 textDetectionModelAsset: {url: detUrl},
                 textRecognitionModelAsset: {url: recUrl},
+                // SDK 默认每次只识别一行；按宽度排序后批量推理可减少调用次数。
+                textRecognitionBatchSize: 8,
                 ortOptions: {
                     backend: "wasm" as const,
                     wasmPaths: this.wasmBaseUrl,
-                    numThreads: 1,
+                    numThreads: 0,
                     simd: true,
                 },
             };

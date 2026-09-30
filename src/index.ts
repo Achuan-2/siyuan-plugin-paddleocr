@@ -2,6 +2,8 @@ import {Dialog, getFrontend, Plugin, Setting, showMessage, type IAssetUploadResu
 import {assetPathFromImage, getAssetOCR, saveAssetOCR} from "./api";
 import {downloadModel, getLegacyModel, listModels, migrateLegacyModels, putModel, removeModels, type DownloadProgress} from "./modelStore";
 import {LocalOCR, type Recognition} from "./ocr";
+import {renderOcrOverlay} from "./ocrOverlay";
+import {formatOcrText, type TextLayout} from "./textLayout";
 import "./style.css";
 
 const SETTINGS_FILE = "settings.json";
@@ -324,8 +326,9 @@ export default class PaddleOCRPlugin extends Plugin {
                 }
                 const image = await readAssetImage(path);
                 const recognition = await this.recognize(image);
-                if (recognition.text && !this.unloading && !(await getAssetOCR(path))) {
-                    await saveAssetOCR(path, recognition.text);
+                const text = formatOcrText(recognition, "auto");
+                if (text && !this.unloading && !(await getAssetOCR(path))) {
+                    await saveAssetOCR(path, text);
                 }
             } catch (error) {
                 showMessage(`PaddleOCR 粘贴识别失败：${errorMessage(error)}`);
@@ -334,30 +337,116 @@ export default class PaddleOCRPlugin extends Plugin {
     }
 
     private openOCRDialog(assetPath?: string): void {
+        let previewUrl: string | null = null;
+        let stopOverlay: () => void = () => undefined;
+        let removeCopyHandlers: () => void = () => undefined;
         const dialog = new Dialog({
             title: "PaddleOCR 图片识别",
-            width: `${Math.min(window.innerWidth - 24, 680)}px`,
-            height: `${Math.min(window.innerHeight - 24, 520)}px`,
+            width: `${Math.min(window.innerWidth - 24, 1100)}px`,
+            height: `${Math.min(window.innerHeight - 24, 720)}px`,
             disableAnimation: true,
+            destroyCallback: () => {
+                stopOverlay();
+                removeCopyHandlers();
+                if (previewUrl) {
+                    URL.revokeObjectURL(previewUrl);
+                }
+            },
             content: `<div class="paddleocr-panel">
-                ${assetPath ? "" : '<label>选择图片<input class="b3-text-field fn__block" data-role="image" type="file" accept="image/*"></label>'}
-                <p data-role="image-status"></p>
-                <div class="paddleocr-panel__actions"><button class="b3-button b3-button--outline" data-action="retry" disabled>重新识别</button><button class="b3-button b3-button--outline" data-action="copy" disabled>复制文字</button>${assetPath ? '<button class="b3-button" data-action="save" disabled>保存到思源 OCR</button>' : ""}</div>
-                <textarea class="b3-text-field fn__block paddleocr-panel__result" data-role="result" spellcheck="false" placeholder="识别结果可在这里修改后保存"></textarea>
-                <p data-role="status" aria-live="polite"></p>
+                <div class="paddleocr-panel__toolbar">
+                    ${assetPath ? "" : '<label>选择图片<input class="b3-text-field" data-role="image" type="file" accept="image/*"></label>'}
+                    <label class="paddleocr-panel__layout">排版<select class="b3-select" data-role="layout" aria-label="排版方式"><option value="auto">自动</option><option value="removeNewlines">去除换行符</option><option value="original">原本</option></select></label>
+                    <div class="paddleocr-panel__actions"><button class="b3-button b3-button--outline" data-action="retry" disabled>重新识别</button><button class="b3-button b3-button--outline" data-action="copy" disabled>复制文字</button>${assetPath ? '<button class="b3-button" data-action="save" disabled>保存到思源 OCR</button>' : ""}</div>
+                </div>
+                <div class="paddleocr-panel__workspace">
+                    <div class="paddleocr-panel__text"><textarea class="paddleocr-panel__result" data-role="result" spellcheck="false" aria-label="识别文字，可编辑" placeholder="识别结果可在这里修改后保存"></textarea></div>
+                    <div class="paddleocr-panel__preview"><span data-role="preview-empty">选择图片后在这里预览</span><div class="paddleocr-panel__image" data-role="preview-image" hidden><img alt="待识别图片" draggable="false"><div class="paddleocr-panel__ocr-layer" data-role="ocr-layer" tabindex="-1"></div></div></div>
+                </div>
+                <div class="paddleocr-panel__footer"><span data-role="image-status"></span><span data-role="status" aria-live="polite"></span></div>
             </div>`,
         });
         const root = dialog.element.querySelector(".paddleocr-panel") as HTMLElement;
         const imageInput = root.querySelector('[data-role="image"]') as HTMLInputElement | null;
+        const layoutSelect = root.querySelector('[data-role="layout"]') as HTMLSelectElement;
         const imageStatus = root.querySelector('[data-role="image-status"]') as HTMLElement;
         const result = root.querySelector('[data-role="result"]') as HTMLTextAreaElement;
         const status = root.querySelector('[data-role="status"]') as HTMLElement;
+        const previewEmpty = root.querySelector('[data-role="preview-empty"]') as HTMLElement;
+        const previewStage = root.querySelector('[data-role="preview-image"]') as HTMLElement;
+        const previewImage = previewStage.querySelector("img") as HTMLImageElement;
+        const ocrLayer = root.querySelector('[data-role="ocr-layer"]') as HTMLElement;
         const retryButton = root.querySelector('[data-action="retry"]') as HTMLButtonElement;
         const copyButton = root.querySelector('[data-action="copy"]') as HTMLButtonElement;
         const saveButton = root.querySelector('[data-action="save"]') as HTMLButtonElement | null;
         let selectedImage: Blob | null = null;
         let busy = false;
         let recognized = false;
+        let currentRecognition: Recognition | null = null;
+        let currentLayout: TextLayout = "auto";
+        let drafts: Partial<Record<TextLayout, string>> = {};
+
+        ocrLayer.addEventListener("pointerdown", () => ocrLayer.focus({preventScroll: true}));
+
+        const selectedImageText = (target: EventTarget | null): string => {
+            if (target instanceof HTMLElement &&
+                (target.closest("textarea, input, [contenteditable]") || target.isContentEditable)) {
+                return "";
+            }
+            const selection = window.getSelection();
+            if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+                return "";
+            }
+            const range = selection.getRangeAt(0);
+            if (!ocrLayer.contains(range.startContainer) || !ocrLayer.contains(range.endContainer)) {
+                return "";
+            }
+            const selectedLines = Array.from(range.cloneContents().querySelectorAll<HTMLElement>(".paddleocr-panel__ocr-line"))
+                .map(line => line.textContent ?? "")
+                .filter(Boolean);
+            return selectedLines.length > 1 ? selectedLines.join("\n") : selection.toString();
+        };
+        const onCopyShortcut = (event: KeyboardEvent) => {
+            if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "c" &&
+                selectedImageText(event.target)) {
+                event.stopImmediatePropagation();
+            }
+        };
+        const onImageCopy = (event: ClipboardEvent) => {
+            const text = selectedImageText(event.target);
+            if (!text || !event.clipboardData) {
+                return;
+            }
+            event.clipboardData.setData("text/plain", text);
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+        window.addEventListener("keydown", onCopyShortcut, true);
+        window.addEventListener("copy", onImageCopy, true);
+        removeCopyHandlers = () => {
+            window.removeEventListener("keydown", onCopyShortcut, true);
+            window.removeEventListener("copy", onImageCopy, true);
+        };
+
+        const updateTextActions = () => {
+            copyButton.disabled = !result.value;
+            if (saveButton) {
+                saveButton.disabled = busy || !recognized || !result.value.trim();
+            }
+        };
+
+        previewImage.addEventListener("load", () => {
+            previewStage.style.width = `${previewImage.naturalWidth}px`;
+        });
+
+        const showPreview = (image: Blob) => {
+            if (previewUrl) {
+                URL.revokeObjectURL(previewUrl);
+            }
+            previewUrl = URL.createObjectURL(image);
+            previewImage.src = previewUrl;
+            previewStage.hidden = false;
+            previewEmpty.hidden = true;
+        };
 
         const runRecognition = async () => {
             if (busy) {
@@ -365,6 +454,8 @@ export default class PaddleOCRPlugin extends Plugin {
             }
             busy = true;
             recognized = false;
+            currentRecognition = null;
+            drafts = {};
             retryButton.disabled = true;
             copyButton.disabled = true;
             if (imageInput) {
@@ -374,6 +465,8 @@ export default class PaddleOCRPlugin extends Plugin {
                 saveButton.disabled = true;
             }
             result.value = "";
+            stopOverlay();
+            ocrLayer.replaceChildren();
             status.textContent = this.ocr?.isLoaded
                 ? "正在识别..."
                 : "正在识别，首次加载模型可能需要较长时间...";
@@ -386,17 +479,17 @@ export default class PaddleOCRPlugin extends Plugin {
                 if (!image) {
                     throw new Error("请先选择图片");
                 }
+                showPreview(image);
                 const recognition = await this.recognize(image);
                 if (!root.isConnected) {
                     return;
                 }
                 recognized = true;
-                result.value = recognition.text;
-                copyButton.disabled = !recognition.text;
-                if (saveButton) {
-                    saveButton.disabled = !recognition.text;
-                }
-                status.textContent = `识别完成：${recognition.lines} 行，耗时 ${Math.round(recognition.elapsedMs)} 毫秒`;
+                currentRecognition = recognition;
+                result.value = formatOcrText(recognition, currentLayout);
+                stopOverlay = renderOcrOverlay(ocrLayer, recognition);
+                updateTextActions();
+                status.textContent = `识别完成：${recognition.lines} 行，耗时 ${Math.round(recognition.elapsedMs)} 毫秒（检测 ${Math.round(recognition.detectionMs)}，文字识别 ${Math.round(recognition.recognitionMs)}）。可在图片上划选多行，按 Ctrl+C 复制`;
             } catch (error) {
                 if (root.isConnected) {
                     status.textContent = `识别失败：${errorMessage(error)}。模型可在插件设置中导入。`;
@@ -408,6 +501,7 @@ export default class PaddleOCRPlugin extends Plugin {
                     if (imageInput) {
                         imageInput.disabled = false;
                     }
+                    updateTextActions();
                 }
             }
         };
@@ -420,11 +514,16 @@ export default class PaddleOCRPlugin extends Plugin {
                 void runRecognition();
             }
         });
-        result.addEventListener("input", () => {
-            copyButton.disabled = !result.value;
-            if (saveButton) {
-                saveButton.disabled = !recognized || !result.value.trim();
+        layoutSelect.addEventListener("change", () => {
+            currentLayout = layoutSelect.value as TextLayout;
+            if (currentRecognition) {
+                result.value = drafts[currentLayout] ?? formatOcrText(currentRecognition, currentLayout);
+                updateTextActions();
             }
+        });
+        result.addEventListener("input", () => {
+            drafts[currentLayout] = result.value;
+            updateTextActions();
         });
         retryButton.addEventListener("click", () => void runRecognition());
         copyButton.addEventListener("click", async () => {
