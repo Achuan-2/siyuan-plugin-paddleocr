@@ -118,6 +118,39 @@ test("WebGPU 初始化失败后释放实例并回退 WASM", async () => {
     await ocr.dispose();
 });
 
+test("弹窗临时阈值不影响后续全局识别，且复用已有引擎", async () => {
+    const {create, calls, predictions} = await setup();
+    const ocr = create({detectionThreshold: 0.75, recognitionThreshold: 0.65});
+    await ocr.recognize({}, {detectionThreshold: 0.2, recognitionThreshold: 0.1});
+    await ocr.recognize({});
+    assert.equal(predictions[0].params.textDetBoxThresh, 0.2);
+    assert.equal(predictions[0].params.textRecScoreThresh, 0.1);
+    assert.equal(predictions[0].params.textDetLimitSideLen, 960);
+    assert.equal(predictions[1].params.textDetBoxThresh, 0.75);
+    assert.equal(predictions[1].params.textRecScoreThresh, 0.65);
+    assert.equal(calls.length, 1);
+    await ocr.dispose();
+});
+
+test("GPU 推理回退 WASM 时保留本次临时阈值", async () => {
+    const {create, predictions} = await setup({
+        predict(options) {
+            if (options.ortOptions.backend !== "wasm") throw new Error("GPU device lost");
+        },
+    });
+    const ocr = create();
+    await ocr.recognize({}, {detectionThreshold: 0, recognitionThreshold: 1});
+    assert.deepEqual(predictions.map(call => call.provider), ["webgpu", "wasm"]);
+    for (const {params} of predictions) {
+        assert.equal(params.textDetBoxThresh, 0);
+        assert.equal(params.textRecScoreThresh, 1);
+    }
+    await ocr.recognize({});
+    assert.equal(predictions[2].params.textDetBoxThresh, 0.7);
+    assert.equal(predictions[2].params.textRecScoreThresh, 0.6);
+    await ocr.dispose();
+});
+
 test("Worker 初始化失败后仍可在主线程使用 WebGPU", async () => {
     const {create, calls, disposed} = await setup({
         initialize(options) {

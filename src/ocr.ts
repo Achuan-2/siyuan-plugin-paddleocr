@@ -1,6 +1,6 @@
 import {PaddleOCR, type OcrResult, type OcrResultItem, type PaddleOCRCreateOptions} from "@paddleocr/paddleocr-js";
 import {getModel, modelName, type ModelVariant} from "./modelStore";
-import {getPredictOptions, type OCRBackend, type RuntimeSettings} from "./runtimeSettings";
+import {getPredictOptions, type OCRBackend, type RecognitionThresholds, type RuntimeSettings} from "./runtimeSettings";
 
 export interface Recognition {
     text: string;
@@ -29,9 +29,10 @@ export class LocalOCR {
         return this.engine !== null;
     }
 
-    async recognize(image: Blob): Promise<Recognition> {
+    async recognize(image: Blob, thresholds?: RecognitionThresholds): Promise<Recognition> {
         await this.ensureLoaded();
-        const options = getPredictOptions(this.runtimeSettings);
+        // 临时阈值仅用于当前推理，不修改共享引擎的全局设置。
+        const options = getPredictOptions({...this.runtimeSettings, ...thresholds});
         let results: OcrResult[];
         try {
             results = await this.engine!.predict(image, options);

@@ -11,6 +11,8 @@ export interface RuntimeSettings {
     recognitionBatchSize: typeof RECOGNITION_BATCH_OPTIONS[number];
 }
 
+export type RecognitionThresholds = Pick<RuntimeSettings, "detectionThreshold" | "recognitionThreshold">;
+
 // 默认限制检测长边以减少计算量；0 仍可用于沿用模型的检测尺寸配置。
 export const DEFAULT_RUNTIME_SETTINGS: Readonly<RuntimeSettings> = {
     backend: "auto",

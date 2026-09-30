@@ -4,7 +4,7 @@ import {downloadModel, getLegacyModel, listModels, migrateLegacyModels, modelNam
 import {LocalOCR, type Recognition} from "./ocr";
 import {renderOcrOverlay} from "./ocrOverlay";
 import {formatOcrText, type TextLayout} from "./textLayout";
-import {DEFAULT_RUNTIME_SETTINGS, DETECTION_MAX_SIDE_OPTIONS, RECOGNITION_BATCH_OPTIONS, normalizeRuntimeSettings, type RuntimeSettings} from "./runtimeSettings";
+import {DEFAULT_RUNTIME_SETTINGS, DETECTION_MAX_SIDE_OPTIONS, RECOGNITION_BATCH_OPTIONS, normalizeRuntimeSettings, type RecognitionThresholds, type RuntimeSettings} from "./runtimeSettings";
 import "./style.css";
 
 const SETTINGS_FILE = "settings.json";
@@ -461,12 +461,12 @@ export default class PaddleOCRPlugin extends Plugin {
         return task;
     }
 
-    private recognize(image: Blob): Promise<Recognition> {
+    private recognize(image: Blob, thresholds?: RecognitionThresholds): Promise<Recognition> {
         return this.queueTask(() => {
             if (this.unloading || !this.ocr) {
                 throw new Error("插件已卸载");
             }
-            return this.ocr.recognize(image);
+            return this.ocr.recognize(image, thresholds);
         });
     }
 
@@ -515,6 +515,12 @@ export default class PaddleOCRPlugin extends Plugin {
                     <label class="paddleocr-panel__layout">排版<select class="b3-select" data-role="layout" aria-label="排版方式"><option value="auto">自动</option><option value="removeNewlines">去除换行符</option><option value="original">原本</option></select></label>
                     <div class="paddleocr-panel__actions"><button class="b3-button b3-button--outline" data-action="retry" disabled>重新识别</button><button class="b3-button b3-button--outline" data-action="copy" disabled>复制文字</button>${assetPath ? '<button class="b3-button" data-action="save" disabled>保存到思源 OCR</button>' : ""}</div>
                 </div>
+                <div class="paddleocr-panel__thresholds">
+                    <label>检测阈值<input class="b3-text-field" data-role="detection-threshold" type="number" min="0" max="1" step="0.01" required></label>
+                    <label>识别阈值<input class="b3-text-field" data-role="recognition-threshold" type="number" min="0" max="1" step="0.01" required></label>
+                    <button class="b3-button b3-button--outline" data-action="global-thresholds">使用全局设置</button>
+                    <span>仅本次弹窗有效，调整后点击“重新识别”</span>
+                </div>
                 <div class="paddleocr-panel__workspace">
                     <div class="paddleocr-panel__preview"><span data-role="preview-empty">选择图片后在这里预览</span><div class="paddleocr-panel__image" data-role="preview-image" hidden><img alt="待识别图片" draggable="false"><div class="paddleocr-panel__ocr-layer" data-role="ocr-layer" tabindex="-1"></div></div></div>
                     <div class="paddleocr-panel__text"><textarea class="paddleocr-panel__result" data-role="result" spellcheck="false" aria-label="识别文字，可编辑" placeholder="识别结果可在这里修改后保存"></textarea></div>
@@ -535,6 +541,16 @@ export default class PaddleOCRPlugin extends Plugin {
         const retryButton = root.querySelector('[data-action="retry"]') as HTMLButtonElement;
         const copyButton = root.querySelector('[data-action="copy"]') as HTMLButtonElement;
         const saveButton = root.querySelector('[data-action="save"]') as HTMLButtonElement | null;
+        const detectionThreshold = root.querySelector('[data-role="detection-threshold"]') as HTMLInputElement;
+        const recognitionThreshold = root.querySelector('[data-role="recognition-threshold"]') as HTMLInputElement;
+        const globalThresholdsButton = root.querySelector('[data-action="global-thresholds"]') as HTMLButtonElement;
+        const thresholdControls = [detectionThreshold, recognitionThreshold, globalThresholdsButton];
+        const useGlobalThresholds = () => {
+            detectionThreshold.value = String(this.runtimeSettings.detectionThreshold);
+            recognitionThreshold.value = String(this.runtimeSettings.recognitionThreshold);
+        };
+        useGlobalThresholds();
+        globalThresholdsButton.addEventListener("click", useGlobalThresholds);
         let selectedImage: Blob | null = null;
         let busy = false;
         let recognized = false;
@@ -609,7 +625,18 @@ export default class PaddleOCRPlugin extends Plugin {
             if (busy) {
                 return;
             }
+            const invalid = [detectionThreshold, recognitionThreshold].find(input => !input.checkValidity());
+            if (invalid) {
+                status.textContent = "阈值请输入 0 到 1 之间的数值";
+                invalid.reportValidity();
+                return;
+            }
+            const thresholds: RecognitionThresholds = {
+                detectionThreshold: detectionThreshold.valueAsNumber,
+                recognitionThreshold: recognitionThreshold.valueAsNumber,
+            };
             busy = true;
+            thresholdControls.forEach(control => control.disabled = true);
             recognized = false;
             currentRecognition = null;
             drafts = {};
@@ -637,7 +664,7 @@ export default class PaddleOCRPlugin extends Plugin {
                     throw new Error("请先选择图片");
                 }
                 showPreview(image);
-                const recognition = await this.recognize(image);
+                const recognition = await this.recognize(image, thresholds);
                 if (!root.isConnected) {
                     return;
                 }
@@ -648,6 +675,18 @@ export default class PaddleOCRPlugin extends Plugin {
                 updateTextActions();
                 const providerLabel = (provider: string) => provider === "webgpu" ? "WebGPU" : "WASM";
                 status.textContent = `识别完成：${recognition.lines} 行，耗时 ${Math.round(recognition.elapsedMs)} 毫秒（检测 ${Math.round(recognition.detectionMs)} / ${providerLabel(recognition.runtime.detProvider)}，文字识别 ${Math.round(recognition.recognitionMs)} / ${providerLabel(recognition.runtime.recProvider)}）。可在图片上划选多行，按 Ctrl+C 复制`;
+                const text = result.value;
+                if (assetPath && text.trim()) {
+                    try {
+                        // 保存前读取最新内容，保留其他窗口或粘贴识别已写入的 OCR 文字。
+                        if (!(await getAssetOCR(assetPath)) && !this.unloading) {
+                            await saveAssetOCR(assetPath, text);
+                            status.textContent += "。OCR 文字已自动保存到思源，可用于搜索";
+                        }
+                    } catch (error) {
+                        status.textContent += `。自动保存失败：${errorMessage(error)}，可点击“保存到思源 OCR”重试`;
+                    }
+                }
             } catch (error) {
                 if (root.isConnected) {
                     status.textContent = `识别失败：${errorMessage(error)}。模型可在插件设置中导入。`;
@@ -655,6 +694,7 @@ export default class PaddleOCRPlugin extends Plugin {
             } finally {
                 busy = false;
                 if (root.isConnected) {
+                    thresholdControls.forEach(control => control.disabled = false);
                     retryButton.disabled = false;
                     if (imageInput) {
                         imageInput.disabled = false;

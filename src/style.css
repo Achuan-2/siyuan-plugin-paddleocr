@@ -164,6 +164,30 @@
     min-width: 112px;
 }
 
+.paddleocr-panel__thresholds {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+}
+
+.paddleocr-panel__thresholds label {
+    align-items: center;
+    display: flex;
+    gap: 6px;
+    margin: 0;
+}
+
+.paddleocr-panel__thresholds input {
+    margin-top: 0;
+    width: 80px;
+}
+
+.paddleocr-panel__thresholds > span {
+    color: var(--b3-theme-on-surface-light);
+    font-size: 12px;
+}
+
 .paddleocr-panel__workspace {
     display: grid;
     flex: 1;
