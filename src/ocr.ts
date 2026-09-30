@@ -1,9 +1,6 @@
 import {PaddleOCR, type OcrResult, type OcrResultItem} from "@paddleocr/paddleocr-js";
-import {getModel} from "./modelStore";
-
-// 截图中的图标和箭头容易被检测为单字；默认阈值分别为 0.6 和 0。
-const TEXT_BOX_SCORE_THRESHOLD = 0.7;
-const TEXT_RECOGNITION_SCORE_THRESHOLD = 0.6;
+import {getModel, modelName, type ModelVariant} from "./modelStore";
+import {getPredictOptions, type RuntimeSettings} from "./runtimeSettings";
 
 export interface Recognition {
     text: string;
@@ -20,7 +17,12 @@ export class LocalOCR {
     private modelUrls: string[] = [];
     private loading: Promise<void> | null = null;
 
-    constructor(private readonly wasmBaseUrl: string, private readonly workerUrl: string) {}
+    constructor(
+        private readonly wasmBaseUrl: string,
+        private readonly workerUrl: string,
+        private variant: ModelVariant,
+        private runtimeSettings: RuntimeSettings,
+    ) {}
 
     get isLoaded(): boolean {
         return this.engine !== null;
@@ -28,10 +30,7 @@ export class LocalOCR {
 
     async recognize(image: Blob): Promise<Recognition> {
         await this.ensureLoaded();
-        const [result] = await this.engine!.predict(image, {
-            textDetBoxThresh: TEXT_BOX_SCORE_THRESHOLD,
-            textRecScoreThresh: TEXT_RECOGNITION_SCORE_THRESHOLD,
-        }) as OcrResult[];
+        const [result] = await this.engine!.predict(image, getPredictOptions(this.runtimeSettings)) as OcrResult[];
         if (!result) {
             throw new Error("识别引擎没有返回结果");
         }
@@ -50,6 +49,22 @@ export class LocalOCR {
     async reload(): Promise<void> {
         await this.dispose();
         await this.ensureLoaded();
+    }
+
+    async setVariant(variant: ModelVariant): Promise<void> {
+        if (this.variant === variant) {
+            return;
+        }
+        await this.dispose();
+        this.variant = variant;
+    }
+
+    async setRuntimeSettings(settings: RuntimeSettings): Promise<void> {
+        // 批量大小在创建引擎时配置，其余参数可在每次识别时直接应用。
+        if (settings.recognitionBatchSize !== this.runtimeSettings.recognitionBatchSize) {
+            await this.dispose();
+        }
+        this.runtimeSettings = {...settings};
     }
 
     async dispose(): Promise<void> {
@@ -77,7 +92,7 @@ export class LocalOCR {
     }
 
     private async load(): Promise<void> {
-        const [det, rec] = await Promise.all([getModel("det"), getModel("rec")]);
+        const [det, rec] = await Promise.all([getModel(this.variant, "det"), getModel(this.variant, "rec")]);
         if (!det || !rec) {
             throw new Error("请先导入检测模型和识别模型的 .tar 文件");
         }
@@ -86,12 +101,12 @@ export class LocalOCR {
         this.modelUrls = [detUrl, recUrl];
         try {
             const options = {
-                textDetectionModelName: "PP-OCRv6_small_det",
-                textRecognitionModelName: "PP-OCRv6_small_rec",
+                textDetectionModelName: modelName(this.variant, "det"),
+                textRecognitionModelName: modelName(this.variant, "rec"),
                 textDetectionModelAsset: {url: detUrl},
                 textRecognitionModelAsset: {url: recUrl},
                 // SDK 默认每次只识别一行；按宽度排序后批量推理可减少调用次数。
-                textRecognitionBatchSize: 8,
+                textRecognitionBatchSize: this.runtimeSettings.recognitionBatchSize,
                 ortOptions: {
                     backend: "wasm" as const,
                     wasmPaths: this.wasmBaseUrl,

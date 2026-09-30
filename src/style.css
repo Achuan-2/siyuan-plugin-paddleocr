@@ -24,6 +24,67 @@
     min-width: 0;
 }
 
+.paddleocr-model-select {
+    align-items: center;
+    display: flex !important;
+    gap: 10px;
+    margin: 0 0 6px !important;
+}
+
+.paddleocr-model-select select {
+    min-width: 100px;
+}
+
+.paddleocr-model-manage,
+.paddleocr-runtime-settings {
+    margin-top: 10px;
+}
+
+.paddleocr-model-manage summary,
+.paddleocr-runtime-settings summary {
+    color: var(--b3-theme-on-surface-light);
+    cursor: pointer;
+}
+
+.paddleocr-runtime-settings__fields > label {
+    align-items: center;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) 120px;
+}
+
+.paddleocr-runtime-settings__fields small {
+    color: var(--b3-theme-on-surface-light);
+    display: block;
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+.paddleocr-runtime-settings__fields input,
+.paddleocr-runtime-settings__fields select {
+    box-sizing: border-box;
+    min-width: 0;
+    width: 100%;
+}
+
+.paddleocr-runtime-settings__fields label input {
+    margin-top: 0;
+}
+
+.paddleocr-runtime-settings__footer {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.paddleocr-runtime-settings__footer span {
+    color: var(--b3-theme-on-surface-light);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
 .paddleocr-models [hidden] {
     display: none !important;
 }

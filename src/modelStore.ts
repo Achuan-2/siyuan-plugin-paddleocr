@@ -1,14 +1,18 @@
 export type ModelKind = "det" | "rec";
+export type ModelVariant = "tiny" | "small";
 export type DownloadProgress =
     | {stage: "downloading"; loaded: number; total: number | null}
     | {stage: "proxy"}
     | {stage: "saving"};
 
 const MODEL_DIRECTORY = "data/storage/petal/siyuan-plugin-paddleocr/models";
-const MODEL_NAMES: Record<ModelKind, string> = {
-    det: "PP-OCRv6_small_det_onnx_infer.tar",
-    rec: "PP-OCRv6_small_rec_onnx_infer.tar",
-};
+export function modelName(variant: ModelVariant, kind: ModelKind): string {
+    return `PP-OCRv6_${variant}_${kind}`;
+}
+
+function modelFileName(variant: ModelVariant, kind: ModelKind): string {
+    return `${modelName(variant, kind)}_onnx_infer.tar`;
+}
 const MODEL_URL_BASE = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/";
 const DATABASE_NAME = "siyuan-plugin-paddleocr-models";
 const STORE_NAME = "archives";
@@ -32,11 +36,11 @@ async function post(path: string, body: object | FormData): Promise<FileResponse
     return response.json();
 }
 
-function modelPath(kind: ModelKind): string {
-    return `${MODEL_DIRECTORY}/${MODEL_NAMES[kind]}`;
+function modelPath(variant: ModelVariant, kind: ModelKind): string {
+    return `${MODEL_DIRECTORY}/${modelFileName(variant, kind)}`;
 }
 
-export async function listModels(): Promise<Record<ModelKind, boolean>> {
+export async function listModels(variant: ModelVariant): Promise<Record<ModelKind, boolean>> {
     const response = await post("/api/file/readDir", {path: MODEL_DIRECTORY});
     if (response.code === 404) {
         return {det: false, rec: false};
@@ -45,20 +49,20 @@ export async function listModels(): Promise<Record<ModelKind, boolean>> {
         throw new Error(response.msg || "读取模型目录失败");
     }
     const names = new Set(response.data?.filter(entry => !entry.isDir).map(entry => entry.name));
-    return {det: names.has(MODEL_NAMES.det), rec: names.has(MODEL_NAMES.rec)};
+    return {det: names.has(modelFileName(variant, "det")), rec: names.has(modelFileName(variant, "rec"))};
 }
 
-export async function getModel(kind: ModelKind): Promise<Blob | null> {
+export async function getModel(variant: ModelVariant, kind: ModelKind): Promise<Blob | null> {
     const response = await fetch("/api/file/getFile", {
         method: "POST",
-        body: JSON.stringify({path: modelPath(kind)}),
+        body: JSON.stringify({path: modelPath(variant, kind)}),
         headers: {"Content-Type": "application/json"},
         credentials: "same-origin",
     });
     if (response.headers.get("Content-Type")?.includes("application/json")) {
         const result = await response.json() as FileResponse;
         if (result.code === 404) {
-            return getLegacyModel(kind);
+            return variant === "small" ? getLegacyModel(kind) : null;
         }
         throw new Error(result.msg || "读取同步模型失败");
     }
@@ -68,11 +72,11 @@ export async function getModel(kind: ModelKind): Promise<Blob | null> {
     return response.blob();
 }
 
-export async function putModel(kind: ModelKind, file: Blob): Promise<void> {
+export async function putModel(variant: ModelVariant, kind: ModelKind, file: Blob): Promise<void> {
     const form = new FormData();
-    form.append("path", modelPath(kind));
+    form.append("path", modelPath(variant, kind));
     form.append("isDir", "false");
-    form.append("file", file, MODEL_NAMES[kind]);
+    form.append("file", file, modelFileName(variant, kind));
     const response = await post("/api/file/putFile", form);
     if (response.code !== 0) {
         throw new Error(response.msg || "保存模型失败");
@@ -145,8 +149,8 @@ async function downloadThroughProxy(url: string): Promise<Blob> {
     return new Blob([bytes], {type: "application/x-tar"});
 }
 
-export async function downloadModel(kind: ModelKind, onProgress: (progress: DownloadProgress) => void): Promise<void> {
-    const url = `${MODEL_URL_BASE}${MODEL_NAMES[kind]}`;
+export async function downloadModel(variant: ModelVariant, kind: ModelKind, onProgress: (progress: DownloadProgress) => void): Promise<void> {
+    const url = `${MODEL_URL_BASE}${modelFileName(variant, kind)}`;
     let model: Blob;
     try {
         model = await downloadDirectly(url, onProgress);
@@ -162,20 +166,22 @@ export async function downloadModel(kind: ModelKind, onProgress: (progress: Down
         throw new Error("下载的模型包不完整");
     }
     onProgress({stage: "saving"});
-    await putModel(kind, model);
+    await putModel(variant, kind, model);
 }
 
-export async function removeModels(): Promise<void> {
-    const existing = await listModels();
+export async function removeModels(variant: ModelVariant): Promise<void> {
+    const existing = await listModels(variant);
     for (const kind of ["det", "rec"] as const) {
         if (existing[kind]) {
-            const response = await post("/api/file/removeFile", {path: modelPath(kind)});
+            const response = await post("/api/file/removeFile", {path: modelPath(variant, kind)});
             if (response.code !== 0) {
                 throw new Error(response.msg || "删除同步模型失败");
             }
         }
     }
-    await withStore("readwrite", store => store.clear());
+    if (variant === "small") {
+        await withStore("readwrite", store => store.clear());
+    }
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -210,7 +216,7 @@ export async function getLegacyModel(kind: ModelKind): Promise<Blob | null> {
 }
 
 export async function migrateLegacyModels(): Promise<boolean> {
-    const existing = await listModels();
+    const existing = await listModels("small");
     const kinds = (["det", "rec"] as const).filter(kind => !existing[kind]);
     if (kinds.length === 0) {
         return false;
@@ -220,7 +226,7 @@ export async function migrateLegacyModels(): Promise<boolean> {
         return false;
     }
     for (let index = 0; index < kinds.length; index++) {
-        await putModel(kinds[index], legacy[index]!);
+        await putModel("small", kinds[index], legacy[index]!);
     }
     return true;
 }

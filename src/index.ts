@@ -1,13 +1,20 @@
 import {Dialog, getFrontend, Plugin, Setting, showMessage, type IAssetUploadResult, type IEventBusMap} from "siyuan";
 import {assetPathFromImage, getAssetOCR, saveAssetOCR} from "./api";
-import {downloadModel, getLegacyModel, listModels, migrateLegacyModels, putModel, removeModels, type DownloadProgress} from "./modelStore";
+import {downloadModel, getLegacyModel, listModels, migrateLegacyModels, modelName, putModel, removeModels, type DownloadProgress, type ModelVariant} from "./modelStore";
 import {LocalOCR, type Recognition} from "./ocr";
 import {renderOcrOverlay} from "./ocrOverlay";
 import {formatOcrText, type TextLayout} from "./textLayout";
+import {DEFAULT_RUNTIME_SETTINGS, DETECTION_MAX_SIDE_OPTIONS, RECOGNITION_BATCH_OPTIONS, normalizeRuntimeSettings, type RuntimeSettings} from "./runtimeSettings";
 import "./style.css";
 
 const SETTINGS_FILE = "settings.json";
 const IMAGE_EXTENSIONS = /\.(?:png|jpe?g|webp|bmp|gif)$/i;
+
+interface PluginSettings {
+    autoPasteOCR: boolean;
+    modelVariant: ModelVariant;
+    runtimeSettings: RuntimeSettings;
+}
 
 function errorMessage(error: unknown): string {
     if (error instanceof Error) {
@@ -42,7 +49,9 @@ function waitForDialogPaint(): Promise<void> {
 export default class PaddleOCRPlugin extends Plugin {
     private ocr: LocalOCR | null = null;
     private modelsReady = false;
+    private modelVariant: ModelVariant = "small";
     private autoPasteOCR = true;
+    private runtimeSettings: RuntimeSettings = {...DEFAULT_RUNTIME_SETTINGS};
     private unloading = false;
     private recognitionQueue: Promise<unknown> = Promise.resolve();
 
@@ -100,11 +109,15 @@ export default class PaddleOCRPlugin extends Plugin {
     async onload(): Promise<void> {
         const wasmBaseUrl = new URL(`/plugins/${this.name}/wasm/`, location.origin).href;
         const workerUrl = new URL(`/plugins/${this.name}/ocr-worker.js`, location.origin).href;
-        this.ocr = new LocalOCR(wasmBaseUrl, workerUrl);
         const stored = await this.loadData(SETTINGS_FILE).catch(() => null);
         if (stored && typeof stored === "object" && typeof stored.autoPasteOCR === "boolean") {
             this.autoPasteOCR = stored.autoPasteOCR;
         }
+        if (stored && typeof stored === "object" && (stored.modelVariant === "tiny" || stored.modelVariant === "small")) {
+            this.modelVariant = stored.modelVariant;
+        }
+        this.runtimeSettings = normalizeRuntimeSettings(stored?.runtimeSettings);
+        this.ocr = new LocalOCR(wasmBaseUrl, workerUrl, this.modelVariant, this.runtimeSettings);
         await this.refreshModelsReady();
         this.configureSetting();
         this.eventBus.on("open-menu-image", this.imageMenuHandler);
@@ -127,12 +140,14 @@ export default class PaddleOCRPlugin extends Plugin {
 
     private async refreshModelsReady(): Promise<void> {
         try {
-            const stored = await listModels();
+            const stored = await listModels(this.modelVariant);
             if (stored.det && stored.rec) {
                 this.modelsReady = true;
                 return;
             }
-            const [det, rec] = await Promise.all([getLegacyModel("det"), getLegacyModel("rec")]);
+            const [det, rec] = this.modelVariant === "small"
+                ? await Promise.all([getLegacyModel("det"), getLegacyModel("rec")])
+                : [null, null];
             this.modelsReady = Boolean((stored.det || det) && (stored.rec || rec));
         } catch {
             this.modelsReady = false;
@@ -142,9 +157,9 @@ export default class PaddleOCRPlugin extends Plugin {
     private configureSetting(): void {
         this.setting = new Setting({width: `${Math.min(window.innerWidth - 24, 680)}px`});
         this.setting.addItem({
-            title: "PP-OCRv6_small ONNX 模型",
+            title: "OCR 模型",
             direction: "row",
-            description: "模型保存到 data/storage/petal/siyuan-plugin-paddleocr/models，通过思源同步到其他设备。",
+            description: "选择模型后下载检测和识别文件；模型会通过思源同步。",
             createActionElement: () => this.createModelSetting(),
         });
         this.setting.addItem({
@@ -156,15 +171,17 @@ export default class PaddleOCRPlugin extends Plugin {
                 toggle.className = "b3-switch";
                 toggle.checked = this.autoPasteOCR;
                 toggle.addEventListener("change", async () => {
+                    toggle.disabled = true;
                     try {
-                        const response = await this.saveData(SETTINGS_FILE, {autoPasteOCR: toggle.checked});
-                        if (response?.code !== 0) {
-                            throw new Error(response?.msg || "内核未保存设置");
-                        }
-                        this.autoPasteOCR = toggle.checked;
+                        await this.queueTask(async () => {
+                            await this.saveSettings({autoPasteOCR: toggle.checked});
+                            this.autoPasteOCR = toggle.checked;
+                        });
                     } catch (error) {
                         toggle.checked = this.autoPasteOCR;
                         showMessage(`保存设置失败：${errorMessage(error)}`);
+                    } finally {
+                        toggle.disabled = false;
                     }
                 });
                 return toggle;
@@ -172,45 +189,138 @@ export default class PaddleOCRPlugin extends Plugin {
         });
     }
 
+    private async saveSettings(changes: Partial<PluginSettings> = {}): Promise<void> {
+        const response = await this.saveData(SETTINGS_FILE, {
+            autoPasteOCR: this.autoPasteOCR,
+            modelVariant: this.modelVariant,
+            runtimeSettings: this.runtimeSettings,
+            ...changes,
+        });
+        if (response?.code !== 0) {
+            throw new Error(response?.msg || "内核未保存设置");
+        }
+    }
+
+    private createRuntimeSetting(): HTMLElement {
+        const root = document.createElement("details");
+        root.className = "paddleocr-runtime-settings";
+        root.innerHTML = `<summary>高级运行设置</summary>
+            <div class="paddleocr-runtime-settings__fields">
+                <label><span>检测置信度阈值<small>调低减少漏检，调高减少误检</small></span><input class="b3-text-field" data-role="detection-threshold" type="number" min="0" max="1" step="0.01" required></label>
+                <label><span>识别置信度阈值<small>过滤低置信度的识别文字</small></span><input class="b3-text-field" data-role="recognition-threshold" type="number" min="0" max="1" step="0.01" required></label>
+                <label><span>检测图像最大边长<small>较小更省资源，较大保留更多小字细节</small></span><select class="b3-select" data-role="max-side">${DETECTION_MAX_SIDE_OPTIONS.map(size => `<option value="${size}">${size === 0 ? "模型默认" : `${size} px`}</option>`).join("")}</select></label>
+                <label><span>文字识别批量大小<small>较小更省内存，较大可能加快多行识别</small></span><select class="b3-select" data-role="batch-size">${RECOGNITION_BATCH_OPTIONS.map(size => `<option value="${size}">${size} 行</option>`).join("")}</select></label>
+            </div>
+            <div class="paddleocr-runtime-settings__footer"><button class="b3-button b3-button--outline" data-role="reset">恢复默认</button><span data-role="status" aria-live="polite"></span></div>`;
+        const detectionThreshold = root.querySelector('[data-role="detection-threshold"]') as HTMLInputElement;
+        const recognitionThreshold = root.querySelector('[data-role="recognition-threshold"]') as HTMLInputElement;
+        const maxSide = root.querySelector('[data-role="max-side"]') as HTMLSelectElement;
+        const batchSize = root.querySelector('[data-role="batch-size"]') as HTMLSelectElement;
+        const resetButton = root.querySelector('[data-role="reset"]') as HTMLButtonElement;
+        const status = root.querySelector('[data-role="status"]') as HTMLElement;
+        const controls = [detectionThreshold, recognitionThreshold, maxSide, batchSize, resetButton];
+        const syncValues = () => {
+            detectionThreshold.value = String(this.runtimeSettings.detectionThreshold);
+            recognitionThreshold.value = String(this.runtimeSettings.recognitionThreshold);
+            maxSide.value = String(this.runtimeSettings.detectionMaxSide);
+            batchSize.value = String(this.runtimeSettings.recognitionBatchSize);
+        };
+        const applySettings = async (settings: RuntimeSettings) => {
+            controls.forEach(control => control.disabled = true);
+            status.textContent = "正在保存…";
+            try {
+                await this.queueTask(async () => {
+                    const previous = this.runtimeSettings;
+                    await this.ocr?.setRuntimeSettings(settings);
+                    try {
+                        await this.saveSettings({runtimeSettings: settings});
+                    } catch (error) {
+                        await this.ocr?.setRuntimeSettings(previous);
+                        throw error;
+                    }
+                    this.runtimeSettings = settings;
+                });
+                status.textContent = "已保存，下次识别生效";
+            } catch (error) {
+                status.textContent = `保存失败：${errorMessage(error)}`;
+            } finally {
+                syncValues();
+                controls.forEach(control => control.disabled = false);
+            }
+        };
+        root.addEventListener("change", () => {
+            const invalid = [detectionThreshold, recognitionThreshold].find(input => !input.checkValidity());
+            if (invalid) {
+                status.textContent = "阈值请输入 0 到 1 之间的数值";
+                invalid.reportValidity();
+                return;
+            }
+            void applySettings(normalizeRuntimeSettings({
+                detectionThreshold: Number(detectionThreshold.value),
+                recognitionThreshold: Number(recognitionThreshold.value),
+                detectionMaxSide: Number(maxSide.value),
+                recognitionBatchSize: Number(batchSize.value),
+            }));
+        });
+        resetButton.addEventListener("click", () => void applySettings({...DEFAULT_RUNTIME_SETTINGS}));
+        syncValues();
+        return root;
+    }
+
     private createModelSetting(): HTMLElement {
         const root = document.createElement("div");
         root.className = "paddleocr-models";
-        root.innerHTML = `<div class="paddleocr-model-row" data-model="det">
+        root.innerHTML = `<label class="paddleocr-model-select">模型大小<select class="b3-select" data-role="variant" aria-label="OCR 模型大小"><option value="tiny">tiny（轻量）</option><option value="small">small（默认）</option></select></label>
+            <div class="paddleocr-model-row" data-model="det">
                 <div class="paddleocr-model-row__main"><span>检测模型</span><button class="b3-button b3-button--outline" data-action="download-det" disabled>下载模型</button><span class="paddleocr-model-row__state" data-role="state-det" hidden></span></div>
-                <small>PP-OCRv6_small_det</small>
+                <small data-role="name-det"></small>
                 <div class="paddleocr-model-row__progress" data-role="progress-det" hidden><progress max="100"></progress><span aria-live="polite"></span></div>
             </div>
             <div class="paddleocr-model-row" data-model="rec">
                 <div class="paddleocr-model-row__main"><span>识别模型</span><button class="b3-button b3-button--outline" data-action="download-rec" disabled>下载模型</button><span class="paddleocr-model-row__state" data-role="state-rec" hidden></span></div>
-                <small>PP-OCRv6_small_rec</small>
+                <small data-role="name-rec"></small>
                 <div class="paddleocr-model-row__progress" data-role="progress-rec" hidden><progress max="100"></progress><span aria-live="polite"></span></div>
             </div>
-            <label>检测模型 .tar<input class="b3-text-field fn__block" data-role="det" type="file" accept=".tar,application/x-tar"></label>
-            <label>识别模型 .tar<input class="b3-text-field fn__block" data-role="rec" type="file" accept=".tar,application/x-tar"></label>
-            <div class="paddleocr-panel__actions"><button class="b3-button" data-action="import">导入模型</button><button class="b3-button b3-button--outline" data-action="migrate">迁移旧模型</button><button class="b3-button b3-button--outline" data-action="clear">删除同步模型</button></div>
+            <details class="paddleocr-model-manage"><summary>手动导入与管理</summary>
+                <label>检测模型 .tar<input class="b3-text-field fn__block" data-role="det" type="file" accept=".tar,application/x-tar"></label>
+                <label>识别模型 .tar<input class="b3-text-field fn__block" data-role="rec" type="file" accept=".tar,application/x-tar"></label>
+                <div class="paddleocr-panel__actions"><button class="b3-button" data-action="import">导入模型</button><button class="b3-button b3-button--outline" data-action="migrate">迁移旧模型</button><button class="b3-button b3-button--outline" data-action="clear">删除当前模型</button></div>
+            </details>
             <p data-role="models-status" aria-live="polite"></p>`;
+        const variantSelect = root.querySelector('[data-role="variant"]') as HTMLSelectElement;
+        variantSelect.value = this.modelVariant;
         const detInput = root.querySelector('[data-role="det"]') as HTMLInputElement;
         const recInput = root.querySelector('[data-role="rec"]') as HTMLInputElement;
         const status = root.querySelector('[data-role="models-status"]') as HTMLElement;
+        root.insertBefore(this.createRuntimeSetting(), status);
         const importButton = root.querySelector('[data-action="import"]') as HTMLButtonElement;
         const migrateButton = root.querySelector('[data-action="migrate"]') as HTMLButtonElement;
         const clearButton = root.querySelector('[data-action="clear"]') as HTMLButtonElement;
+        migrateButton.hidden = this.modelVariant !== "small";
+        migrateButton.disabled = true;
         const actionButtons = Array.from(root.querySelectorAll<HTMLButtonElement>("button[data-action]"));
         const downloadButtons = {} as Record<"det" | "rec", HTMLButtonElement>;
         const modelStates = {} as Record<"det" | "rec", HTMLElement>;
+        const modelNames = {} as Record<"det" | "rec", HTMLElement>;
         const progressRows = {} as Record<"det" | "rec", HTMLElement>;
         for (const kind of ["det", "rec"] as const) {
             downloadButtons[kind] = root.querySelector(`[data-action="download-${kind}"]`) as HTMLButtonElement;
             modelStates[kind] = root.querySelector(`[data-role="state-${kind}"]`) as HTMLElement;
+            modelNames[kind] = root.querySelector(`[data-role="name-${kind}"]`) as HTMLElement;
             progressRows[kind] = root.querySelector(`[data-role="progress-${kind}"]`) as HTMLElement;
         }
         let canMigrate = false;
         const updateStatus = async () => {
-            const stored = await listModels();
-            const [legacyDet, legacyRec] = stored.det && stored.rec
+            const variant = this.modelVariant;
+            const stored = await listModels(variant);
+            const [legacyDet, legacyRec] = variant !== "small" || (stored.det && stored.rec)
                 ? [null, null]
                 : await Promise.all([getLegacyModel("det"), getLegacyModel("rec")]);
+            if (variant !== this.modelVariant) {
+                return;
+            }
             for (const kind of ["det", "rec"] as const) {
+                modelNames[kind].textContent = modelName(variant, kind);
                 const legacy = kind === "det" ? legacyDet : legacyRec;
                 const available = stored[kind] || Boolean(legacy);
                 downloadButtons[kind].hidden = available;
@@ -219,26 +329,63 @@ export default class PaddleOCRPlugin extends Plugin {
                 modelStates[kind].textContent = stored[kind] ? "已下载" : "已下载（旧版存储）";
             }
             this.modelsReady = Boolean((stored.det || legacyDet) && (stored.rec || legacyRec));
-            canMigrate = Boolean(legacyDet && legacyRec && (!stored.det || !stored.rec));
+            canMigrate = variant === "small" && Boolean(legacyDet && legacyRec && (!stored.det || !stored.rec));
+            migrateButton.hidden = variant !== "small";
             migrateButton.disabled = !canMigrate;
         };
         void updateStatus().catch(error => {
             status.textContent = `读取模型失败：${errorMessage(error)}`;
         });
+        variantSelect.addEventListener("change", async () => {
+            const variant = variantSelect.value as ModelVariant;
+            variantSelect.disabled = true;
+            actionButtons.forEach(button => button.disabled = true);
+            const switchTask = this.queueTask(async () => {
+                const previous = this.modelVariant;
+                await this.ocr?.setVariant(variant);
+                try {
+                    await this.saveSettings({modelVariant: variant});
+                } catch (error) {
+                    await this.ocr?.setVariant(previous);
+                    throw error;
+                }
+                this.modelVariant = variant;
+                this.modelsReady = false;
+                await updateStatus();
+            });
+            try {
+                await switchTask;
+                status.textContent = "";
+            } catch (error) {
+                variantSelect.value = this.modelVariant;
+                status.textContent = `切换模型失败：${errorMessage(error)}`;
+            } finally {
+                variantSelect.disabled = false;
+                for (const kind of ["det", "rec"] as const) {
+                    downloadButtons[kind].disabled = downloadButtons[kind].hidden;
+                }
+                migrateButton.disabled = !canMigrate;
+                importButton.disabled = false;
+                clearButton.disabled = false;
+            }
+        });
         const runModelAction = async (message: string, action: () => Promise<void>) => {
             actionButtons.forEach(button => button.disabled = true);
+            variantSelect.disabled = true;
             status.textContent = message;
             try {
-                await this.recognitionQueue;
-                await action();
-                await this.ocr?.dispose();
-                await updateStatus();
+                await this.queueTask(async () => {
+                    await action();
+                    await this.ocr?.dispose();
+                    await updateStatus();
+                });
                 status.textContent = "模型已更新";
             } catch (error) {
                 await updateStatus().catch(() => this.refreshModelsReady());
                 status.textContent = `${message}失败：${errorMessage(error)}`;
             } finally {
                 actionButtons.forEach(button => button.disabled = false);
+                variantSelect.disabled = false;
                 for (const kind of ["det", "rec"] as const) {
                     downloadButtons[kind].disabled = downloadButtons[kind].hidden;
                 }
@@ -271,20 +418,22 @@ export default class PaddleOCRPlugin extends Plugin {
                         progressText.textContent = "下载完成，正在保存模型...";
                     }
                 };
-                void runModelAction("下载模型", () => downloadModel(kind, showProgress))
+                void runModelAction("下载模型", () => downloadModel(this.modelVariant, kind, showProgress))
                     .finally(() => { progressRow.hidden = true; });
             });
         }
         importButton.addEventListener("click", () => {
             const det = detInput.files?.[0];
             const rec = recInput.files?.[0];
-            if (!det || !rec || !det.name.toLowerCase().endsWith(".tar") || !rec.name.toLowerCase().endsWith(".tar")) {
-                status.textContent = "请选择检测和识别两个 .tar 模型包";
+            if (!det || !rec ||
+                det.name !== `${modelName(this.modelVariant, "det")}_onnx_infer.tar` ||
+                rec.name !== `${modelName(this.modelVariant, "rec")}_onnx_infer.tar`) {
+                status.textContent = `请选择 ${this.modelVariant} 对应的检测和识别 .tar 模型包`;
                 return;
             }
             void runModelAction("正在导入模型...", async () => {
-                await putModel("det", det);
-                await putModel("rec", rec);
+                await putModel(this.modelVariant, "det", det);
+                await putModel(this.modelVariant, "rec", rec);
             });
         });
         migrateButton.addEventListener("click", () => {
@@ -295,22 +444,26 @@ export default class PaddleOCRPlugin extends Plugin {
             });
         });
         clearButton.addEventListener("click", () => {
-            if (window.confirm("删除同步模型后，其他设备同步时也会删除模型。确定继续吗？")) {
-                void runModelAction("正在删除同步模型...", removeModels);
+            if (window.confirm(`删除 ${this.modelVariant} 同步模型后，其他设备同步时也会删除。确定继续吗？`)) {
+                void runModelAction("正在删除同步模型...", () => removeModels(this.modelVariant));
             }
         });
         return root;
     }
 
+    private queueTask<T>(action: () => Promise<T>): Promise<T> {
+        const task = this.recognitionQueue.then(action);
+        this.recognitionQueue = task.catch(() => undefined);
+        return task;
+    }
+
     private recognize(image: Blob): Promise<Recognition> {
-        const task = this.recognitionQueue.then(() => {
+        return this.queueTask(() => {
             if (this.unloading || !this.ocr) {
                 throw new Error("插件已卸载");
             }
             return this.ocr.recognize(image);
         });
-        this.recognitionQueue = task.catch(() => undefined);
-        return task;
     }
 
     private async recognizePastedAssets(result: IAssetUploadResult): Promise<void> {
