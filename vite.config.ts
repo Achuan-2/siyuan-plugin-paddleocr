@@ -8,6 +8,8 @@ export default defineConfig({
         targets: [
             {src: "plugin.json", dest: "."},
             {src: "README.md", dest: "."},
+            {src: "icon.png", dest: "."},
+            {src: "preview.png", dest: "."},
             {src: "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded*.{mjs,wasm}", dest: "wasm"},
             {src: "node_modules/@paddleocr/paddleocr-js/dist/assets/worker-entry-*.js", dest: ".", rename: "ocr-worker.js"},
         ],
