@@ -1,0 +1,23 @@
+{
+  "name": "siyuan-plugin-paddleocr",
+  "author": "Achuan-2",
+  "url": "",
+  "version": "0.3.0",
+  "minAppVersion": "3.0.0",
+  "backends": ["all"],
+  "frontends": ["all"],
+  "disabledInPublish": true,
+  "displayName": {
+    "default": "PaddleOCR ONNX",
+    "zh_CN": "PaddleOCR 图片识别"
+  },
+  "description": {
+    "default": "Run PP-OCRv6 ONNX locally with separately downloaded models.",
+    "zh_CN": "下载或导入 PP-OCRv6 ONNX 模型到思源同步目录，在本机识别图片文字"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh_CN": "README.md"
+  },
+  "keywords": ["OCR", "PaddleOCR", "ONNX"]
+}

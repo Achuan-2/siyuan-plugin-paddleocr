@@ -1,0 +1,88 @@
+.paddleocr-panel {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+    overflow: auto;
+    padding: 16px;
+}
+
+.paddleocr-panel label,
+.paddleocr-models label {
+    display: block;
+    margin-top: 10px;
+}
+
+.paddleocr-panel label input,
+.paddleocr-models label input {
+    margin-top: 4px;
+}
+
+.paddleocr-models {
+    min-width: 0;
+}
+
+.paddleocr-models [hidden] {
+    display: none !important;
+}
+
+.paddleocr-model-row {
+    border-bottom: 1px solid var(--b3-border-color);
+    padding: 10px 0;
+}
+
+.paddleocr-model-row__main {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+}
+
+.paddleocr-model-row__main > :first-child {
+    font-weight: 600;
+}
+
+.paddleocr-model-row__state {
+    color: var(--b3-theme-primary);
+}
+
+.paddleocr-model-row small {
+    color: var(--b3-theme-on-surface-light);
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.paddleocr-model-row__progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.paddleocr-model-row__progress progress {
+    width: 100%;
+}
+
+.paddleocr-models p,
+.paddleocr-panel p {
+    margin: 8px 0;
+    overflow-wrap: anywhere;
+}
+
+.paddleocr-panel__links,
+.paddleocr-panel__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.paddleocr-panel__result {
+    box-sizing: border-box;
+    flex: 1;
+    min-height: 120px;
+    margin-top: 10px;
+    width: 100%;
+    resize: none;
+}
