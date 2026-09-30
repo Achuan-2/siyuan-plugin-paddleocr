@@ -1,18 +1,22 @@
 export const DETECTION_MAX_SIDE_OPTIONS = [0, 640, 960, 1280, 1920] as const;
 export const RECOGNITION_BATCH_OPTIONS = [1, 4, 8, 16] as const;
+export const OCR_BACKEND_OPTIONS = ["auto", "webgpu", "wasm"] as const;
+export type OCRBackend = typeof OCR_BACKEND_OPTIONS[number];
 
 export interface RuntimeSettings {
+    backend: OCRBackend;
     detectionThreshold: number;
     recognitionThreshold: number;
     detectionMaxSide: typeof DETECTION_MAX_SIDE_OPTIONS[number];
     recognitionBatchSize: typeof RECOGNITION_BATCH_OPTIONS[number];
 }
 
-// 保留插件原来的识别行为；0 表示沿用模型中的检测尺寸配置。
+// 默认限制检测长边以减少计算量；0 仍可用于沿用模型的检测尺寸配置。
 export const DEFAULT_RUNTIME_SETTINGS: Readonly<RuntimeSettings> = {
+    backend: "auto",
     detectionThreshold: 0.7,
     recognitionThreshold: 0.6,
-    detectionMaxSide: 0,
+    detectionMaxSide: 960,
     recognitionBatchSize: 8,
 };
 
@@ -21,6 +25,8 @@ export function normalizeRuntimeSettings(value: unknown): RuntimeSettings {
     const threshold = (value: unknown, fallback: number): number =>
         typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
     return {
+        backend: OCR_BACKEND_OPTIONS.find(backend => backend === stored.backend)
+            ?? DEFAULT_RUNTIME_SETTINGS.backend,
         detectionThreshold: threshold(stored.detectionThreshold, DEFAULT_RUNTIME_SETTINGS.detectionThreshold),
         recognitionThreshold: threshold(stored.recognitionThreshold, DEFAULT_RUNTIME_SETTINGS.recognitionThreshold),
         detectionMaxSide: DETECTION_MAX_SIDE_OPTIONS.find(size => size === stored.detectionMaxSide)

@@ -1,3 +1,7 @@
 allowBuilds:
   esbuild: false
   protobufjs: false
+
+# SDK 自带 Worker 内置 ORT 1.24.3，主线程及其 WASM 必须使用同版本。
+overrides:
+  onnxruntime-web: 1.24.3

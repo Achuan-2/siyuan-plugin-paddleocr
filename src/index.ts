@@ -206,20 +206,23 @@ export default class PaddleOCRPlugin extends Plugin {
         root.className = "paddleocr-runtime-settings";
         root.innerHTML = `<summary>高级运行设置</summary>
             <div class="paddleocr-runtime-settings__fields">
+                <label><span>推理后端<small>自动优先尝试 WebGPU，不可用或失败时使用 WASM</small></span><select class="b3-select" data-role="backend"><option value="auto">自动（默认）</option><option value="webgpu">WebGPU 优先</option><option value="wasm">WASM（CPU）</option></select></label>
                 <label><span>检测置信度阈值<small>调低减少漏检，调高减少误检</small></span><input class="b3-text-field" data-role="detection-threshold" type="number" min="0" max="1" step="0.01" required></label>
                 <label><span>识别置信度阈值<small>过滤低置信度的识别文字</small></span><input class="b3-text-field" data-role="recognition-threshold" type="number" min="0" max="1" step="0.01" required></label>
                 <label><span>检测图像最大边长<small>较小更省资源，较大保留更多小字细节</small></span><select class="b3-select" data-role="max-side">${DETECTION_MAX_SIDE_OPTIONS.map(size => `<option value="${size}">${size === 0 ? "模型默认" : `${size} px`}</option>`).join("")}</select></label>
                 <label><span>文字识别批量大小<small>较小更省内存，较大可能加快多行识别</small></span><select class="b3-select" data-role="batch-size">${RECOGNITION_BATCH_OPTIONS.map(size => `<option value="${size}">${size} 行</option>`).join("")}</select></label>
             </div>
             <div class="paddleocr-runtime-settings__footer"><button class="b3-button b3-button--outline" data-role="reset">恢复默认</button><span data-role="status" aria-live="polite"></span></div>`;
+        const backend = root.querySelector('[data-role="backend"]') as HTMLSelectElement;
         const detectionThreshold = root.querySelector('[data-role="detection-threshold"]') as HTMLInputElement;
         const recognitionThreshold = root.querySelector('[data-role="recognition-threshold"]') as HTMLInputElement;
         const maxSide = root.querySelector('[data-role="max-side"]') as HTMLSelectElement;
         const batchSize = root.querySelector('[data-role="batch-size"]') as HTMLSelectElement;
         const resetButton = root.querySelector('[data-role="reset"]') as HTMLButtonElement;
         const status = root.querySelector('[data-role="status"]') as HTMLElement;
-        const controls = [detectionThreshold, recognitionThreshold, maxSide, batchSize, resetButton];
+        const controls = [backend, detectionThreshold, recognitionThreshold, maxSide, batchSize, resetButton];
         const syncValues = () => {
+            backend.value = this.runtimeSettings.backend;
             detectionThreshold.value = String(this.runtimeSettings.detectionThreshold);
             recognitionThreshold.value = String(this.runtimeSettings.recognitionThreshold);
             maxSide.value = String(this.runtimeSettings.detectionMaxSide);
@@ -256,6 +259,7 @@ export default class PaddleOCRPlugin extends Plugin {
                 return;
             }
             void applySettings(normalizeRuntimeSettings({
+                backend: backend.value,
                 detectionThreshold: Number(detectionThreshold.value),
                 recognitionThreshold: Number(recognitionThreshold.value),
                 detectionMaxSide: Number(maxSide.value),
@@ -642,7 +646,8 @@ export default class PaddleOCRPlugin extends Plugin {
                 result.value = formatOcrText(recognition, currentLayout);
                 stopOverlay = renderOcrOverlay(ocrLayer, recognition);
                 updateTextActions();
-                status.textContent = `识别完成：${recognition.lines} 行，耗时 ${Math.round(recognition.elapsedMs)} 毫秒（检测 ${Math.round(recognition.detectionMs)}，文字识别 ${Math.round(recognition.recognitionMs)}）。可在图片上划选多行，按 Ctrl+C 复制`;
+                const providerLabel = (provider: string) => provider === "webgpu" ? "WebGPU" : "WASM";
+                status.textContent = `识别完成：${recognition.lines} 行，耗时 ${Math.round(recognition.elapsedMs)} 毫秒（检测 ${Math.round(recognition.detectionMs)} / ${providerLabel(recognition.runtime.detProvider)}，文字识别 ${Math.round(recognition.recognitionMs)} / ${providerLabel(recognition.runtime.recProvider)}）。可在图片上划选多行，按 Ctrl+C 复制`;
             } catch (error) {
                 if (root.isConnected) {
                     status.textContent = `识别失败：${errorMessage(error)}。模型可在插件设置中导入。`;

@@ -13,7 +13,7 @@
   "disabledInPublish": true,
   "displayName": {
     "default": "PaddleOCR",
-    "zh_CN": "PaddleOCR 图片文字识别"
+    "zh_CN": "PaddleOCR"
   },
   "description": {
     "default": "Run PP-OCRv6 ONNX locally with separately downloaded models.",

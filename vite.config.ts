@@ -5,6 +5,7 @@ import {defineConfig} from "vite";
 import {viteStaticCopy} from "vite-plugin-static-copy";
 
 const pluginName = JSON.parse(readFileSync(resolve(__dirname, "plugin.json"), "utf8")).name;
+const ortVersion = JSON.parse(readFileSync(resolve(__dirname, "node_modules/onnxruntime-web/package.json"), "utf8")).version;
 let buildWritten = false;
 
 export default defineConfig({
@@ -22,8 +23,15 @@ export default defineConfig({
             if (!workerUrl.test(source)) {
                 this.error("PaddleOCR SDK 的 Worker 入口发生变化，请检查打包适配后再构建");
             }
+            // SDK 主线程默认导入普通 ORT；显式使用含 WebGPU 和 WASM 的版本，
+            // 保证 Worker 不可用时的主线程回退也支持 GPU 推理。
+            const ortImport = 'import("onnxruntime-web")';
+            if (!source.includes(ortImport)) {
+                this.error("PaddleOCR SDK 的 ORT 导入发生变化，请检查 WebGPU 打包适配");
+            }
             return {
-                code: source.replace(workerUrl, `new URL(${JSON.stringify(`/plugins/${pluginName}/ocr-worker.js`)}, globalThis.location.origin)`),
+                code: source.replace(workerUrl, `new URL(${JSON.stringify(`/plugins/${pluginName}/ocr-worker.js`)}, globalThis.location.origin)`)
+                    .replace(ortImport, 'import("onnxruntime-web/webgpu")'),
                 map: null,
             };
         },
@@ -34,9 +42,21 @@ export default defineConfig({
             {src: "icon.png", dest: "."},
             {src: "preview.png", dest: "."},
             // 当前主线程入口与 SDK 预构建 Worker 都加载 JSEP 版本。
-            // 两者仍使用 WASM 后端；无需同时携带普通、Asyncify 和 JSPI 版本。
+            // JSEP 同时支持 WebGPU 与 WASM 回退，无需携带其他 WASM 版本。
             {src: "node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.{mjs,wasm}", dest: "wasm"},
-            {src: "node_modules/@paddleocr/paddleocr-js/dist/assets/worker-entry-*.js", dest: ".", rename: "ocr-worker.js"},
+            {
+                src: "node_modules/@paddleocr/paddleocr-js/dist/assets/worker-entry-*.js",
+                dest: ".",
+                rename: "ocr-worker.js",
+                transform: (content) => {
+                    // 预构建 Worker 内置 ORT JS，必须与本地复制的 WASM 文件同版本。
+                    const workerVersion = content.match(/ONNX Runtime Web v([\d.]+)/)?.[1];
+                    if (workerVersion !== ortVersion) {
+                        throw new Error(`OCR Worker 内置 ORT ${workerVersion ?? "未知"} 与本地 WASM ${ortVersion} 不匹配`);
+                    }
+                    return content;
+                },
+            },
         ],
     }), {
         name: "package-plugin",
